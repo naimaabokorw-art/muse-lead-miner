@@ -16,8 +16,7 @@ def normalize_name(value: str) -> str:
 def normalize_phone(value: str) -> str:
     if not value:
         return ""
-    digits = re.sub(r"\D", "", value)
-    return digits
+    return re.sub(r"\D", "", value)
 
 
 def normalize_url(value: str) -> str:
@@ -50,17 +49,18 @@ def dedupe_norm_text(value: str) -> str:
 
 def safe_get(url: str, timeout: int = 15, max_retries: int = 3, session: Optional[requests.Session] = None) -> requests.Response:
     last_error = None
-    for attempt in range(max_retries):
+    attempts = max(1, max_retries)
+    for _ in range(attempts):
         try:
             req = session or requests
-            response = req.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
+            response = req.get(url, timeout=timeout, headers={"User-Agent": "MuseLeadMiner/0.1 (public research; contact unavailable)"})
             if response.status_code < 400:
                 return response
             if response.status_code in {429, 500, 502, 503, 504}:
                 last_error = RuntimeError(f"Status {response.status_code}")
                 continue
             return response
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             last_error = exc
     if last_error:
         raise last_error
