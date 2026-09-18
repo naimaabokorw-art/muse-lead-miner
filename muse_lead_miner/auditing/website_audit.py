@@ -1,34 +1,16 @@
-import re
 from typing import Any, Dict
+from muse_lead_miner.utils.networking import safe_get
 
-NEW_BUSINESS_PATTERNS = [
-    "grand opening",
-    "now open",
-    "opening soon",
-    "new location",
-    "just opened",
-    "newly opened",
-    "open for business",
-    "we are open",
-]
-
-
-def detect_new_business(record: Dict[str, Any], extra_text: str = "") -> Dict[str, Any]:
-    text = (extra_text or "") + " " + (record.get("website") or "") + " " + (record.get("source_url") or "")
-    lowered = text.lower()
-    matches = [p for p in NEW_BUSINESS_PATTERNS if p in lowered]
-    if matches:
-        return {
-            "new_business": "TRUE",
-            "new_business_confidence": "HIGH",
-            "new_business_evidence": "; ".join(matches),
-            "new_business_source": record.get("source") or "public listing",
-            "new_business_date_if_known": "UNKNOWN",
-        }
-    return {
-        "new_business": "UNCERTAIN",
-        "new_business_confidence": "LOW",
-        "new_business_evidence": "No strong public evidence of opening date or launch announcement was found.",
-        "new_business_source": "",
-        "new_business_date_if_known": "UNKNOWN",
-    }
+def audit_website(record: Dict[str, Any]) -> Dict[str, Any]:
+    website = record.get("website")
+    if not website: return {"website_quality":"NOT_AUDITABLE", "website_audit_evidence":"No website available to audit."}
+    try:
+        response = safe_get(website, timeout=12, max_retries=1); body = (response.text or "").lower()
+        issues = []
+        if response.status_code >= 400: issues.append(f"HTTP status {response.status_code}")
+        if not website.startswith("https://"): issues.append("HTTPS unavailable")
+        if "viewport" not in body: issues.append("mobile viewport not detected")
+        if not any(x in body for x in ("contact", "book", "call", "enquire", "quote")): issues.append("no obvious contact CTA")
+        return {"website_quality":"POSSIBLE_REDESIGN" if issues else "HEALTHY", "website_audit_evidence":"; ".join(issues) if issues else "Homepage responded successfully with HTTPS, viewport, and contact evidence."}
+    except Exception as exc:
+        return {"website_quality":"WEBSITE_STATUS_UNCERTAIN", "website_audit_evidence":f"Audit could not establish website status: {exc}"}

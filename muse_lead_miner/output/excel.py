@@ -1,13 +1,9 @@
-import csv
 from pathlib import Path
-from typing import Iterable, List, Dict, Any
+from typing import Any, Dict, Iterable, List
+from openpyxl import Workbook
 
-
-def write_csv(path: str | Path, rows: Iterable[Dict[str, Any]], fieldnames: List[str]):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as fp:
-        writer = csv.DictWriter(fp, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({k: row.get(k, "") for k in fieldnames})
+def write_xlsx(path: str | Path, rows: Iterable[Dict[str, Any]], fieldnames: List[str]) -> None:
+    path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook(); ws = wb.active; ws.title = "Leads"; ws.append(fieldnames)
+    for row in rows: ws.append([row.get(field, "") for field in fieldnames])
+    wb.save(path)

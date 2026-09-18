@@ -1,32 +1,7 @@
 from typing import Any, Dict
 
-from muse_lead_miner.utils.networking import safe_get
-
-
-def audit_website(record: Dict[str, Any]) -> Dict[str, Any]:
-    website = record.get("website")
-    if not website:
-        return {"website_quality": "UNCERTAIN", "website_audit_evidence": "No website available to audit."}
-    try:
-        response = safe_get(website, timeout=12, max_retries=1)
-        body = response.text.lower()
-        title = ""
-        if response.history:
-            redirect = True
-        else:
-            redirect = False
-        viewport = "viewport" in body
-        contact_cta = any(term in body for term in ["contact", "book", "call", "enquire", "quote"])
-        https_ok = website.startswith("https://")
-        if response.status_code >= 400 or not https_ok or not viewport or not contact_cta:
-            quality = "POSSIBLE_REDESIGN"
-            evidence = [
-                f"HTTP status {response.status_code}",
-                "HTTPS unavailable" if not https_ok else "HTTPS present",
-                "No mobile viewport detected" if not viewport else "Mobile viewport detected",
-                "No obvious contact CTA found" if not contact_cta else "Contact CTA present",
-            ]
-            return {"website_quality": quality, "website_audit_evidence": "; ".join(evidence)}
-        return {"website_quality": "HEALTHY", "website_audit_evidence": "Homepage responded successfully, HTTPS present, viewport found, contact path found."}
-    except Exception as exc:
-        return {"website_quality": "BROKEN", "website_audit_evidence": f"Website audit failed: {exc}"}
+def calculate_lead_score(record: Dict[str, Any]) -> Dict[str, Any]:
+    verification = int(record.get("verification_score", 0) or 0)
+    parts = {"verification": round(verification * 0.45), "website_opportunity": 15 if record.get("website_status") == "NO_OFFICIAL_WEBSITE_FOUND" else 10 if record.get("website_status") == "OFFICIAL_WEBSITE_FOUND" else 0, "public_email": 10 if record.get("email") else 0, "location": 10 if record.get("city") and record.get("country") else 0, "niche": 10 if record.get("category") else 0, "new_business": 10 if record.get("new_business") == "TRUE" else 0, "completeness": 5 if any(record.get(k) for k in ("phone", "website", "email")) else 0}
+    total = min(100, max(0, sum(parts.values())))
+    return {"lead_score": int(total), "score_breakdown": parts}

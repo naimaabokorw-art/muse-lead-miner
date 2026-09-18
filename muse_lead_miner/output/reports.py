@@ -1,16 +1,7 @@
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict
 
-from openpyxl import Workbook
-
-
-def write_xlsx(path: str | Path, rows: Iterable[Dict[str, Any]], fieldnames: List[str]):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Leads"
-    ws.append(fieldnames)
-    for row in rows:
-        ws.append([row.get(field, "") for field in fieldnames])
-    wb.save(path)
+def write_run_report(path: str | Path, report: Dict[str, Any]) -> None:
+    path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fp:
+        for key, value in report.items(): fp.write(f"{key}: {value}\n")

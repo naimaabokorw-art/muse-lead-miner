@@ -1,36 +1,14 @@
-import re
-from typing import Any, Dict, List
+from typing import Any, Dict
+from muse_lead_miner.utils.networking import domain_from_url, normalize_url
 
 
-def score_verification(record: Dict[str, Any]) -> Dict[str, Any]:
-    evidence = []
-    score = 0
-    name_match = bool(record.get("business_name"))
-    city_match = bool(record.get("city"))
-    address_match = bool(record.get("address"))
-    phone_match = bool(record.get("phone"))
-    domain_match = bool(record.get("website"))
-    if name_match:
-        score += 25
-        evidence.append("business name present")
-    if city_match:
-        score += 20
-        evidence.append("city matches")
-    if address_match:
-        score += 20
-        evidence.append("address present")
-    if phone_match:
-        score += 15
-        evidence.append("phone present")
-    if domain_match:
-        score += 20
-        evidence.append("website/domain observed")
-    if score >= 80:
-        status = "VERIFIED"
-    elif score >= 50:
-        status = "PARTIALLY_VERIFIED"
-    elif score >= 25:
-        status = "UNCERTAIN"
-    else:
-        status = "REJECTED"
-    return {"verification_status": status, "verification_score": min(score, 100), "verification_evidence": "; ".join(evidence) or "insufficient evidence"}
+def discover_website(record: Dict[str, Any]) -> Dict[str, Any]:
+    website = normalize_url(record.get("website", ""))
+    source = normalize_url(record.get("source_url", ""))
+    source_domain = domain_from_url(source)
+    directory_domains = ("duckduckgo.com", "google.", "facebook.com", "instagram.com", "linkedin.com", "yelp.")
+    if website and not any(d in domain_from_url(website) for d in directory_domains):
+        return {"website": website, "website_status": "OFFICIAL_WEBSITE_FOUND", "website_evidence": f"Official-domain candidate observed in public record: {website}."}
+    if source and source_domain and not any(d in source_domain for d in directory_domains):
+        return {"website": source, "website_status": "OFFICIAL_WEBSITE_FOUND", "website_evidence": f"Non-directory public source domain observed: {source_domain}."}
+    return {"website": "", "website_status": "NO_OFFICIAL_WEBSITE_FOUND", "website_evidence": "No credible official domain was found in the available public result."}
