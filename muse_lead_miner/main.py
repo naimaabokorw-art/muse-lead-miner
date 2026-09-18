@@ -47,8 +47,9 @@ def parse_args() -> argparse.Namespace:
 
 def build_run_directory(root: Path, config: MuseConfig) -> Path:
     run_dir = root / config.output_directory / config.run_folder_name
-    for name in ("01_raw", "02_cleaned", "03_verified", "04_websites", "05_emails", "06_social", "07_new_business", "08_audited", "09_scored", "10_final"):
-        (run_dir / name).mkdir(parents=True, exist_ok=True)
+    stages = ("01_raw", "02_cleaned", "03_verified", "04_websites", "05_emails", "06_social", "07_new_business", "08_audited", "09_scored", "10_final")
+    for stage in stages:
+        (run_dir / stage).mkdir(parents=True, exist_ok=True)
     return run_dir
 
 
@@ -79,25 +80,24 @@ def run_campaign(config: MuseConfig) -> Dict[str, Any]:
     try:
         raw = discovery_source(config, logger=logger)
     except Exception as exc:
-        logger.error("Discovery failed: %s", exc)
+        logger.exception("Discovery failed")
         raw, source_failures = [], [str(exc)]
     logger.info("Discovery returned %d public records", len(raw))
     checkpoint.save_json("01_raw", raw)
 
     stage("CLEANING")
-    cleaned = [normalize_business_record(r) for r in raw[: max(0, config.limit)]]
+    cleaned = [normalize_business_record(item) for item in raw[:max(0, config.limit)]]
     checkpoint.save_json("02_cleaned", cleaned)
 
     stage("DEDUPLICATION")
     deduped, rejected = deduplicate_businesses(cleaned)
-    logger.info("Retained %d records; rejected %d duplicates/malformed records", len(deduped), len(rejected))
+    logger.info("Retained %d records; rejected %d duplicates or malformed records", len(deduped), len(rejected))
 
     stage("VERIFICATION")
     verified = []
     for item in deduped:
-        ok, reason = validate_business(item)
-        if not ok:
-            item.update(verification_status="REJECTED", verification_score=0, verification_evidence=reason)
+        valid, reason = validate_business(item)
+        if not valid:
             rejected.append({**item, "reason_rejected": reason})
             continue
         item.update(score_verification(item))
@@ -113,28 +113,29 @@ def run_campaign(config: MuseConfig) -> Dict[str, Any]:
     checkpoint.save_json("05_emails", emails)
 
     stage("VALIDATION")
-    logger.info("Email validation is local/public-source syntax validation only; deliverability is not claimed")
-    validated = emails
-    checkpoint.save_json("06_social", validated)
+    logger.info("Email validation is limited to public-source and syntax checks; deliverability is not claimed")
+    checkpoint.save_json("06_social", emails)
 
     stage("SOCIAL ENRICHMENT")
-    socials = _safe_stage(logger, "social enrichment", validated, enrich_social)
+    socials = _safe_stage(logger, "social enrichment", emails, enrich_social)
     checkpoint.save_json("07_new_business", socials)
 
-    stage("NEW BUSINESS / WEBSITE AUDIT")
-    enriched = _safe_stage(logger, "new-business detection", socials, lambda r: detect_new_business(r, extra_text=r.get("snippet", "")))
+    stage("NEW BUSINESS DETECTION")
+    enriched = _safe_stage(logger, "new-business detection", socials, lambda record: detect_new_business(record, extra_text=record.get("snippet", "")))
+
+    stage("WEBSITE AUDIT")
     audited = _safe_stage(logger, "website audit", enriched, audit_website)
     checkpoint.save_json("08_audited", audited)
 
     stage("CLASSIFICATION")
     classified = []
     for item in audited:
-        website_status = item.get("website_status")
+        status = item.get("website_status")
         if item.get("new_business") == "TRUE" and config.mode in {"all", "new_business"}:
             category = "NEW_BUSINESS"
-        elif website_status == "NO_OFFICIAL_WEBSITE_FOUND" and config.mode in {"all", "no_website"}:
+        elif status == "NO_OFFICIAL_WEBSITE_FOUND" and config.mode in {"all", "no_website"}:
             category = "NO_WEBSITE"
-        elif website_status == "WEBSITE_STATUS_UNCERTAIN":
+        elif status == "WEBSITE_STATUS_UNCERTAIN":
             category = "WEBSITE_STATUS_UNCERTAIN"
         elif item.get("website_quality") == "POSSIBLE_REDESIGN" and config.mode in {"all", "redesign"}:
             category = "POSSIBLE_REDESIGN"
@@ -147,21 +148,67 @@ def run_campaign(config: MuseConfig) -> Dict[str, Any]:
     stage("SCORING")
     for item in classified:
         item.update(calculate_lead_score(item))
-        item["outreach_ready"] = "YES" if item["lead_score"] >= config.min_lead_score and item["lead_category"] not in {"WEBSITE_STATUS_UNCERTAIN", "NOT_A_TARGET"} else "NO"
+        item["outreach_ready"] = "YES" if item["lead_score"] >= config.min_lead_score and item["lead_category"] not in {"NOT_A_TARGET", "WEBSITE_STATUS_UNCERTAIN"} else "NO"
         item["date_found"] = started.strftime("%Y-%m-%d")
     checkpoint.save_json("09_scored", classified)
 
     stage("EXPORT")
-    final = [r for r in classified if r.get("lead_category") != "NOT_A_TARGET"]
+    final = [item for item in classified if item.get("lead_category") != "NOT_A_TARGET"]
     fields = ["business_name", "category", "country", "region", "city", "address", "phone", "email", "email_source", "email_type", "email_confidence", "email_status", "website", "website_status", "website_quality", "website_evidence", "website_audit_evidence", "new_business", "new_business_confidence", "new_business_evidence", "instagram", "facebook", "tiktok", "linkedin", "source", "source_url", "verification_status", "verification_score", "verification_evidence", "lead_category", "lead_score", "score_breakdown", "outreach_ready", "personalization_notes", "date_found"]
-    out = run_dir / "10_final"
-    write_csv(out / "final_leads.csv", final, fields)
-    write_xlsx(out / "final_leads.xlsx", final, fields)
+    output = run_dir / "10_final"
+    write_csv(output / "final_leads.csv", final, fields)
+    write_xlsx(output / "final_leads.xlsx", final, fields)
     for filename, category in (("no_website_leads.xlsx", "NO_WEBSITE"), ("new_business_leads.xlsx", "NEW_BUSINESS"), ("redesign_leads.xlsx", "POSSIBLE_REDESIGN"), ("uncertain_leads.xlsx", "WEBSITE_STATUS_UNCERTAIN")):
-        write_xlsx(out / filename, [r for r in final if r.get("lead_category") == category], fields)
-    rejected_rows = [{"business_name": r.get("business_name", ""), "reason_rejected": r.get("reason_rejected", "DUPLICATE"), "source": r.get("source", ""), "date_rejected": started.strftime("%Y-%m-%d")} for r in rejected]
-    write_csv(out / "rejected_leads.csv", rejected_rows, ["business_name", "reason_rejected", "source", "date_rejected"])
-    write_run_report(out / "run_report.txt", {"start_time": started.isoformat(timespec="seconds"), "end_time": datetime.now().isoformat(timespec="seconds"), "country": config.country, "region": config.region, "city": config.city, "niche": config.niche, "requested_leads": config.limit, "discovered": len(raw), "final_leads": len(final), "rejected": len(rejected_rows), "source_failures": source_failures})
+        write_xlsx(output / filename, [item for item in final if item.get("lead_category") == category], fields)
+    rejected_rows = [{"business_name": item.get("business_name", ""), "reason_rejected": item.get("reason_rejected", "DUPLICATE"), "source": item.get("source", ""), "date_rejected": started.strftime("%Y-%m-%d")} for item in rejected]
+    write_csv(output / "rejected_leads.csv", rejected_rows, ["business_name", "reason_rejected", "source", "date_rejected"])
+    write_run_report(output / "run_report.txt", {"start_time": started.isoformat(timespec="seconds"), "end_time": datetime.now().isoformat(timespec="seconds"), "country": config.country, "region": config.region, "city": config.city, "niche": config.niche, "mode": config.mode, "requested_leads": config.limit, "discovered": len(raw), "final_leads": len(final), "rejected": len(rejected_rows), "source_failures": source_failures})
     checkpoint.save_json("10_final", final)
     logger.info("Completed run: %s (%d final leads)", run_dir, len(final))
     return {"run_dir": str(run_dir), "final": final, "rejected": rejected_rows}
+
+
+def _campaigns(path: str) -> List[Dict[str, Any]]:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("campaigns"), list):
+        return data["campaigns"]
+    if isinstance(data, dict):
+        return [data]
+    raise ValueError("Campaign file must contain an object or a list of objects")
+
+
+def _latest_run(config: MuseConfig) -> Path | None:
+    root = Path.cwd() / config.output_directory
+    if not root.exists():
+        return None
+    prefix = f"{config.country.replace(' ', '_')}_{config.city.replace(' ', '_')}_{config.niche.replace(' ', '_')}"
+    candidates = sorted((path for path in root.iterdir() if path.is_dir() and path.name.endswith(prefix)), reverse=True)
+    return candidates[0] if candidates else None
+
+
+def main() -> None:
+    args = parse_args()
+    if args.campaign:
+        campaigns = _campaigns(args.campaign)
+        if not campaigns:
+            raise ValueError(f"No campaigns found in {args.campaign}")
+        for campaign in campaigns:
+            values = vars(args).copy()
+            values.update(campaign)
+            run_campaign(MuseConfig.from_args(argparse.Namespace(**values)))
+        return
+
+    config = MuseConfig.from_args(args)
+    if config.resume:
+        previous = _latest_run(config)
+        if previous:
+            print(f"[RESUME] Existing run found at {previous}; rerunning incomplete pipeline stages", flush=True)
+        else:
+            print("[RESUME] No previous matching run found; starting a new run", flush=True)
+    run_campaign(config)
+
+
+if __name__ == "__main__":
+    main()
