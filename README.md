@@ -1,116 +1,37 @@
 # Muse Web Studio Lead Miner
 
-This project is a Python lead-generation system designed to find local business prospects with evidence-based quality checks.
+This branch is a free, evidence-first lead finder. It does **not** require an API key and does not claim that public web-search results are Google Maps data.
 
-## What it does
+## Discovery source
 
-- Discovers businesses from public search results.
-- Cleans and deduplicates records.
-- Verifies business identity and location.
-- Finds likely website status.
-- Collects public business emails and social profiles when available.
-- Detects new or recently opened businesses.
-- Audits websites for basic technical and conversion issues.
-- Classifies leads and scores them transparently.
-- Exports Excel and CSV files.
+The default source is `PUBLIC_WEB_SEARCH`, using conservative public HTML search results. OpenStreetMap is retained only as an optional supplemental provider. Google Places is not required and is not used by the default pipeline.
 
-## Installation
+Results are explicitly labelled by source. Search engines may block automated requests or return incomplete data; the program retries briefly, logs the failure, and continues without bypassing protections.
 
-From PowerShell:
+## Install
 
-```powershell
-cd path\to\muse-lead-miner
+```bash
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+# macOS/Linux: source .venv/bin/activate
+# Windows: .venv\\Scripts\\activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## Usage
+## Free run
 
-Basic run:
-
-```powershell
-python run_muse.py --country Australia --city Sydney --niche "beauty salon" --limit 20
+```bash
+python main.py --country "United Arab Emirates" --city "Dubai" --niche "beauty salon" --limit 20 --mode all
 ```
 
-No-website mode:
+## Modes
 
-```powershell
-python run_muse.py --country Australia --city Sydney --niche "beauty salon" --limit 50 --mode no_website
+```bash
+python main.py --country "United Arab Emirates" --city "Dubai" --niche "beauty salon" --limit 20 --mode no_website
+python main.py --country "United Arab Emirates" --city "Dubai" --niche "beauty salon" --limit 20 --mode new_business
+python main.py --input leads.csv --mode email_enrichment
 ```
 
-New-business mode:
+For businesses without a known website, the pipeline searches public results for an official domain, rejects social/directory domains, retains the source URL and identity evidence, then extracts only publicly displayed emails from the official website. `NO_WEBSITE_FOUND_AFTER_SEARCH` means no strong official-domain match was found; it is not a mathematical proof that no site exists.
 
-```powershell
-python run_muse.py --country Australia --city Sydney --niche "beauty salon" --limit 50 --mode new_business
-```
-
-Redesign mode:
-
-```powershell
-python run_muse.py --country Australia --city Sydney --niche "beauty salon" --limit 50 --mode redesign
-```
-
-All mode (default):
-
-```powershell
-python run_muse.py --country Australia --city Sydney --niche "beauty salon" --limit 50 --mode all
-```
-
-Campaign queue:
-
-```powershell
-python run_muse.py --campaign campaigns.json
-```
-
-Resume:
-
-```powershell
-python run_muse.py --resume
-```
-
-## Configuration
-
-The project reads settings from the CLI and `muse_lead_miner/config.py`.
-
-You can also add more countries and niche phrases in the configuration module.
-
-## Output files
-
-Each campaign creates a folder under `data/runs/` with the pattern:
-
-```text
-data/runs/2026-09-18_2200_Australia_Sydney_beauty_salon/
-```
-
-This contains intermediate data and final export files including:
-
-- `final_leads.xlsx`
-- `final_leads.csv`
-- `no_website_leads.xlsx`
-- `new_business_leads.xlsx`
-- `redesign_leads.xlsx`
-- `rejected_leads.csv`
-- `uncertain_leads.xlsx`
-- `run_report.txt`
-
-## Troubleshooting
-
-- If a source blocks automation, the system records no data and moves on.
-- If a website fails to load, the audit marks `BROKEN` or `UNCERTAIN` rather than crashing.
-- Empty or uncertain values are kept as empty strings or explicit statuses rather than invented.
-
-## Adding countries and niches
-
-Edit `muse_lead_miner/config.py` to add countries or terms to `SUPPORTED_COUNTRIES` and `NICHE_DATABASE`.
-
-## Understanding scores and uncertainty
-
-- Scores are transparent and 0-100.
-- Missing evidence lowers confidence.
-- Uncertainty is represented with statuses like `UNCERTAIN`, `UNKNOWN`, and `NOT_FOUND` rather than guessed values.
-
-## Notes
-
-This is intentionally conservative. Quality matters more than raw volume.
+Outputs are written to `data/runs/YYYY-MM-DD/`.
