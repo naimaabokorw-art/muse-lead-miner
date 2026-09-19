@@ -3,94 +3,142 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any
+from urllib.parse import quote_plus, urlparse
+
 import requests
+from bs4 import BeautifulSoup
+
 from muse_lead_miner.config import require_maps_api_key
 
-class OpenStreetMapProvider:
-    """Free, no-key fallback. Results are explicitly marked as OpenStreetMap data."""
-    base = "https://nominatim.openstreetmap.org"
-    def __init__(self, timeout=15, retries=3, delay=.25, session=None):
+BLOCKED_DOMAINS = (
+    "facebook.com", "instagram.com", "tiktok.com", "linkedin.com", "yelp.com",
+    "tripadvisor.com", "yellowpages.", "foursquare.com", "google.com", "bing.com",
+    "duckduckgo.com", "mapquest.com", "wikipedia.org",
+)
+
+
+def _domain(url: str) -> str:
+    return urlparse(url).netloc.lower().removeprefix("www.")
+
+
+def _is_candidate_url(url: str) -> bool:
+    domain = _domain(url)
+    return bool(domain and not any(item in domain for item in BLOCKED_DOMAINS))
+
+
+class PublicWebSearchProvider:
+    """Conservative, no-key discovery using public DuckDuckGo HTML results.
+
+    This is labelled PUBLIC_WEB_SEARCH. It is not Google Maps data and does not
+    bypass blocks, execute stealth browsers, or scrape private information.
+    """
+    endpoint = "https://html.duckduckgo.com/html/"
+
+    def __init__(self, timeout=15, retries=2, delay=1.0, session=None):
         self.timeout, self.retries, self.delay = timeout, retries, delay
         self.session = session or requests.Session()
+        self.session.headers.update({"User-Agent": "MuseLeadMiner/0.1 (public research)"})
 
-    def discover(self, country, city, niche, region="", limit=25, logger=None):
-        location = ", ".join(x for x in (city, region, country) if x)
-        query = f"{niche} {location}".strip()
-        for attempt in range(max(1, self.retries)):
-            try:
-                response = self.session.get(
-                    f"{self.base}/search",
-                    params={"q": query, "format": "jsonv2", "limit": limit},
-                    headers={"User-Agent": "MuseLeadMiner/0.1 (public research)"},
-                    timeout=self.timeout,
-                )
-                response.raise_for_status()
-                rows = []
-                for item in response.json():
-                    osm_url = ""
-                    if item.get("osm_id"):
-                        osm_url = f"https://www.openstreetmap.org/{item.get('osm_type', 'node')}/{item['osm_id']}"
-                    rows.append({
-                        "business_name": item.get("name") or item.get("display_name", ""),
-                        "category": niche, "address": item.get("display_name", ""),
-                        "city": city, "region": region, "country": country, "phone": "", "website": "",
-                        "website_status": "WEBSITE_STATUS_UNCERTAIN", "website_source": "openstreetmap_nominatim",
-                        "google_maps_url": "", "google_place_id": "", "rating": "", "review_count": "",
-                        "business_status": "", "opening_hours": "", "latitude": item.get("lat", ""),
-                        "longitude": item.get("lon", ""), "source": "openstreetmap_nominatim",
-                        "source_url": osm_url, "source_count": 1,
-                    })
-                return rows[:limit]
-            except Exception as exc:
-                if logger: logger.warning("OpenStreetMap fallback failed: %s", exc)
-                if attempt + 1 < self.retries: time.sleep(self.delay * (2 ** attempt))
-        return []
-
-class GoogleMapsProvider:
-    """Optional Google Places provider; never scrapes Maps HTML."""
-    base = "https://maps.googleapis.com/maps/api"
-    def __init__(self, api_key=None, timeout=15, retries=3, delay=.25, session=None):
-        self.api_key = (api_key or require_maps_api_key()).strip()
-        self.timeout, self.retries, self.delay = timeout, retries, delay
-        self.session = session or requests.Session()
-
-    def _get(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
-        if not self.api_key:
-            raise RuntimeError("Google Maps provider is not configured. Add GOOGLE_MAPS_API_KEY to .env, or use the free OpenStreetMap fallback.")
-        params = {**params, "key": self.api_key}
+    def search(self, query: str, limit: int = 20, logger: logging.Logger | None = None) -> list[dict[str, str]]:
         last = None
         for attempt in range(max(1, self.retries)):
             try:
-                response = self.session.get(f"{self.base}/{endpoint}/json", params=params, timeout=self.timeout)
-                response.raise_for_status(); payload = response.json()
-                if payload.get("status") not in {"OK", "ZERO_RESULTS"}:
-                    raise RuntimeError(f"Google Places API error: {payload.get('status')} {payload.get('error_message', '')}".strip())
-                return payload
+                response = self.session.get(self.endpoint, params={"q": query}, timeout=self.timeout)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text or "", "html.parser")
+                results = []
+                for item in soup.select(".result"):
+                    link = item.select_one(".result__title a") or item.select_one("a.result__url")
+                    if not link or not link.get("href"):
+                        continue
+                    url = link.get("href", "").strip()
+                    title = link.get_text(" ", strip=True)
+                    snippet_tag = item.select_one(".result__snippet")
+                    snippet = snippet_tag.get_text(" ", strip=True) if snippet_tag else ""
+                    results.append({"title": title, "url": url, "snippet": snippet, "query": query})
+                    if len(results) >= limit:
+                        break
+                return results
             except Exception as exc:
                 last = exc
-                if attempt + 1 < self.retries: time.sleep(self.delay * (2 ** attempt))
-        raise RuntimeError(f"Google Maps provider failed: {last}")
+                if logger:
+                    logger.warning("Public search unavailable for %r: %s", query, exc)
+                if attempt + 1 < self.retries:
+                    time.sleep(self.delay * (2 ** attempt))
+        if logger and last:
+            logger.warning("Public search skipped after retries: %s", last)
+        return []
+
+    def discover(self, country: str, city: str, niche: str, region: str = "", limit: int = 25, logger=None):
+        location = " ".join(x for x in (city, region, country) if x).strip()
+        queries = [f"{niche} in {location}", f"{niche} {location}", f'"{niche}" "{city}" businesses']
+        rows, seen = [], set()
+        for query in queries:
+            for result in self.search(query, limit=max(limit * 2, 20), logger=logger):
+                title = result["title"]
+                key = (title.casefold(), result["url"].casefold())
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append({
+                    "business_name": title,
+                    "category": niche,
+                    "address": "",
+                    "city": city,
+                    "region": region,
+                    "country": country,
+                    "phone": "",
+                    "website": "",
+                    "website_status": "WEBSITE_STATUS_UNCERTAIN",
+                    "website_source": "",
+                    "website_source_url": "",
+                    "maps_url": "",
+                    "google_maps_url": "",
+                    "google_place_id": "",
+                    "rating": "",
+                    "review_count": "",
+                    "business_status": "",
+                    "source": "PUBLIC_WEB_SEARCH",
+                    "source_url": result["url"],
+                    "search_snippet": result["snippet"],
+                    "search_query": result["query"],
+                    "source_count": 1,
+                })
+                if len(rows) >= limit:
+                    return rows[:limit]
+            time.sleep(self.delay)
+        return rows[:limit]
+
+
+class OpenStreetMapProvider:
+    """Optional supplemental geographic source; never the default discovery source."""
+    endpoint = "https://nominatim.openstreetmap.org/search"
+
+    def __init__(self, timeout=15, retries=2, delay=1.0, session=None):
+        self.timeout, self.retries, self.delay = timeout, retries, delay
+        self.session = session or requests.Session()
 
     def discover(self, country, city, niche, region="", limit=25, logger=None):
-        location = ", ".join(x for x in (city, region, country) if x)
-        payload = self._get("place/textsearch", {"query": f"{niche} in {location}", "language": "en"})
-        rows = []
-        for item in payload.get("results", [])[:limit]:
-            try:
-                detail = self._get("place/details", {"place_id": item["place_id"], "language": "en", "fields": "place_id,name,formatted_address,address_components,formatted_phone_number,website,url,rating,user_ratings_total,business_status,opening_hours,geometry"}).get("result", {})
-                rows.append(self._record(detail, country, city, region, niche))
-            except Exception as exc:
-                if logger: logger.warning("Skipping Google place %s: %s", item.get("name", "unknown"), exc)
-        return rows
+        query = ", ".join(x for x in (niche, city, region, country) if x)
+        try:
+            response = self.session.get(self.endpoint, params={"q": query, "format": "jsonv2", "limit": limit}, headers={"User-Agent": "MuseLeadMiner/0.1"}, timeout=self.timeout)
+            response.raise_for_status()
+            return [{"business_name": x.get("name", ""), "category": niche, "address": x.get("display_name", ""), "city": city, "region": region, "country": country, "source": "OPENSTREETMAP", "source_url": f"https://www.openstreetmap.org/{x.get('osm_type', 'node')}/{x.get('osm_id', '')}", "latitude": x.get("lat", ""), "longitude": x.get("lon", ""), "website_status": "WEBSITE_STATUS_UNCERTAIN"} for x in response.json() if x.get("name")]
+        except Exception as exc:
+            if logger: logger.warning("Optional OpenStreetMap lookup failed: %s", exc)
+            return []
 
-    @staticmethod
-    def _record(place, country, city, region, niche):
-        components = {x.get("types", [""])[0]: x.get("long_name", "") for x in place.get("address_components", [])}
-        website = place.get("website", "")
-        return {"business_name": place.get("name", ""), "category": niche, "address": place.get("formatted_address", ""), "city": components.get("locality") or city, "region": components.get("administrative_area_level_1") or region, "country": components.get("country") or country, "phone": place.get("formatted_phone_number", ""), "website": website, "website_status": "WEBSITE_FOUND" if website else "NO_WEBSITE_CONFIRMED", "website_source": "google_places" if website else "google_places_explicitly_empty", "google_maps_url": place.get("url", ""), "google_place_id": place.get("place_id", ""), "rating": place.get("rating", ""), "review_count": place.get("user_ratings_total", ""), "business_status": place.get("business_status", ""), "opening_hours": "; ".join(place.get("opening_hours", {}).get("weekday_text", [])), "latitude": place.get("geometry", {}).get("location", {}).get("lat", ""), "longitude": place.get("geometry", {}).get("location", {}).get("lng", ""), "source": "google_maps", "source_url": place.get("url", ""), "source_count": 1}
+
+class GoogleMapsProvider:
+    """Optional provider retained for explicit use only; not used by default."""
+    def __init__(self, *args, **kwargs):
+        self.api_key = require_maps_api_key()
+        if not self.api_key:
+            raise RuntimeError("Google Maps provider is optional and requires GOOGLE_MAPS_API_KEY.")
+        raise RuntimeError("Google Maps API provider is not the default free discovery path.")
+
 
 def discovery_source(config, logger=None):
-    if require_maps_api_key():
-        return GoogleMapsProvider(timeout=config.timeout, retries=config.retries, delay=config.delay).discover(config.country, config.city, config.niche, config.region, config.limit, logger)
-    if logger: logger.warning("GOOGLE_MAPS_API_KEY is not set; using free OpenStreetMap Nominatim discovery. This is not Google Maps data.")
-    return OpenStreetMapProvider(timeout=config.timeout, retries=config.retries, delay=config.delay).discover(config.country, config.city, config.niche, config.region, config.limit, logger)
+    if logger:
+        logger.info("Discovery source: PUBLIC_WEB_SEARCH (no API key required)")
+    return PublicWebSearchProvider(timeout=config.timeout, retries=config.retries, delay=config.delay).discover(config.country, config.city, config.niche, config.region, config.limit, logger)
