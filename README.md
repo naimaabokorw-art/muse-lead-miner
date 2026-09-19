@@ -1,6 +1,6 @@
 # Muse Web Studio Lead Miner
 
-This rebuild uses Google Places API as the primary discovery source. It does not scrape Google Maps HTML and it never substitutes generic search results when Maps is unavailable.
+This version uses Google Places only when `GOOGLE_MAPS_API_KEY` is configured. If you do not want API keys, it automatically uses the free OpenStreetMap Nominatim provider. That fallback is clearly labeled as `openstreetmap_nominatim` and is not presented as Google Maps data.
 
 ## Install
 
@@ -12,15 +12,18 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` and set `GOOGLE_MAPS_API_KEY` for discovery. Input CSV/XLSX enrichment does not require a Maps key.
-
-## Commands
+## Free no-key run
 
 ```bash
-python main.py --country "United Arab Emirates" --city Dubai --niche "beauty salon" --limit 100 --mode no_website
-python main.py --country "United Arab Emirates" --city Dubai --niche "beauty salon" --limit 100 --mode new_business
-python main.py --country "United Arab Emirates" --city Dubai --niche "beauty salon" --limit 100 --mode all
+python main.py --country "United Arab Emirates" --city Dubai --niche "beauty salon" --limit 10 --mode all
+```
+
+The free provider is rate-limited and may return less complete business data than Google Places. It does not reliably provide phone numbers, websites, ratings, or review counts, so missing fields remain blank or uncertain.
+
+## CSV/XLSX enrichment without discovery
+
+```bash
 python main.py --input leads.csv --mode email_enrichment
 ```
 
-Outputs are written to `data/runs/YYYY-MM-DD/`. Missing evidence stays blank or `UNCERTAIN`; public emails are not claimed deliverable.
+Outputs are written to `data/runs/YYYY-MM-DD/`.

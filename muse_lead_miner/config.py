@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 VALID_MODES = {"no_website", "new_business", "all", "email_enrichment"}
 OUTPUT_FIELDS = [
@@ -42,7 +41,5 @@ def maps_api_key() -> str:
     return os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 
 def require_maps_api_key() -> str:
-    key = maps_api_key()
-    if not key:
-        raise RuntimeError("Google Maps provider is not configured. Add GOOGLE_MAPS_API_KEY to .env.")
-    return key
+    """Return an optional key; discovery uses the free fallback when empty."""
+    return maps_api_key()
