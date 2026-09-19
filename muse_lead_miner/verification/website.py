@@ -1,14 +1,16 @@
-from typing import Any, Dict
-from muse_lead_miner.utils.networking import domain_from_url, normalize_url
+from __future__ import annotations
+from muse_lead_miner.cleaning.normalize import normalize_url, domain
+from muse_lead_miner.verification.business import identity_match
 
-
-def discover_website(record: Dict[str, Any]) -> Dict[str, Any]:
+def classify_website(record):
     website = normalize_url(record.get("website", ""))
-    source = normalize_url(record.get("source_url", ""))
-    source_domain = domain_from_url(source)
-    directory_domains = ("duckduckgo.com", "google.", "facebook.com", "instagram.com", "linkedin.com", "yelp.")
-    if website and not any(d in domain_from_url(website) for d in directory_domains):
-        return {"website": website, "website_status": "OFFICIAL_WEBSITE_FOUND", "website_evidence": f"Official-domain candidate observed in public record: {website}."}
-    if source and source_domain and not any(d in source_domain for d in directory_domains):
-        return {"website": source, "website_status": "OFFICIAL_WEBSITE_FOUND", "website_evidence": f"Non-directory public source domain observed: {source_domain}."}
-    return {"website": "", "website_status": "NO_OFFICIAL_WEBSITE_FOUND", "website_evidence": "No credible official domain was found in the available public result."}
+    if website: return {"website": website, "website_status": "WEBSITE_FOUND", "website_source": record.get("website_source", "google_maps")}
+    if record.get("website_status") == "NO_WEBSITE_CONFIRMED": return {"website": "", "website_status": "NO_WEBSITE_CONFIRMED", "website_source": record.get("website_source", "google_maps_explicitly_empty")}
+    return {"website": "", "website_status": "WEBSITE_STATUS_UNCERTAIN", "website_source": ""}
+
+def discover_website(record, candidate=None):
+    if not candidate: return classify_website(record)
+    match = identity_match(record, candidate)
+    if match["identity_match_score"] >= 70 and domain(candidate.get("website")):
+        return {**match, "website": normalize_url(candidate["website"]), "website_status": "WEBSITE_FOUND", "website_source": "website_verification"}
+    return {**match, "website": "", "website_status": "WEBSITE_STATUS_UNCERTAIN", "website_source": ""}

@@ -1,26 +1,34 @@
+from __future__ import annotations
+
 import re
-from typing import Any, Dict, List
+from collections.abc import Callable
+from muse_lead_miner.cleaning.normalize import domain, text_key
 from muse_lead_miner.utils.networking import safe_get
 
-EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-GENERIC = {"info", "hello", "contact", "enquiries", "enquiry", "bookings", "admin", "office", "sales"}
+EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
+GENERIC = {"info", "hello", "contact", "office", "sales", "bookings", "enquiries", "enquiry", "admin"}
 
+def extract_emails(text: str):
+    return sorted({x.lower() for x in EMAIL_PATTERN.findall(text or "")})
 
-def extract_emails(text: str) -> List[str]:
-    return sorted(set(EMAIL_PATTERN.findall(text.lower())))
+def email_confidence(email, record, url):
+    if domain(url) and email.rsplit("@", 1)[-1].lower() == domain(url): return "HIGH"
+    return "MEDIUM" if record.get("business_name") else "LOW"
 
-
-def enrich_email(record: Dict[str, Any]) -> Dict[str, Any]:
-    found, source_url = [], ""
-    for url in (record.get("website"), record.get("source_url")):
-        if not url: continue
+def enrich_email(record: dict, fetch: Callable = safe_get):
+    website = record.get("website", "")
+    if not website:
+        return {"email": "", "email_source": "", "email_source_url": "", "email_type": "UNKNOWN", "email_confidence": "NONE", "email_status": "NO_PUBLIC_EMAIL_FOUND"}
+    candidates = [website.rstrip("/") + path for path in ("/contact", "/about")]
+    candidates.insert(0, website)
+    for url in candidates:
         try:
-            response = safe_get(url, timeout=10, max_retries=1)
-            found.extend(extract_emails(response.text or "")); source_url = source_url or url
+            response = fetch(url, timeout=15, max_retries=2)
+            for email in extract_emails(response.text):
+                local = email.split("@", 1)[0]
+                return {"email": email, "email_source": "official_website", "email_source_url": url,
+                    "email_type": "BUSINESS_GENERIC" if local in GENERIC else "BUSINESS_ADDRESS_PUBLIC",
+                    "email_confidence": email_confidence(email, record, website), "email_status": "PUBLIC_EMAIL_FOUND_UNVERIFIED"}
         except Exception:
             continue
-    email = sorted(set(found))[0] if found else ""
-    if not email: return {"email":"", "email_source":"", "email_source_url":"", "email_type":"UNKNOWN", "email_confidence":"NONE", "email_status":"NO_PUBLIC_EMAIL_FOUND"}
-    local = email.split("@", 1)[0].lower()
-    generic = local in GENERIC or local.startswith(("info.", "hello."))
-    return {"email": email, "email_source":"public page", "email_source_url":source_url, "email_type":"BUSINESS_GENERIC" if generic else "BUSINESS_OR_PERSONAL_UNCERTAIN", "email_confidence":"PUBLIC_SYNTAX_ONLY", "email_status":"PUBLIC_EMAIL_FOUND_SYNTAX_ONLY"}
+    return {"email": "", "email_source": "", "email_source_url": "", "email_type": "UNKNOWN", "email_confidence": "NONE", "email_status": "NO_PUBLIC_EMAIL_FOUND"}
